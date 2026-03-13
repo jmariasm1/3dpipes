@@ -1,0 +1,767 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no" />
+  <title>3D Pipes Screensaver — p5.js Mobile</title>
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.9.4/lib/p5.min.js"></script>
+  <style>
+    :root {
+      --safe-top: env(safe-area-inset-top, 0px);
+      --safe-right: env(safe-area-inset-right, 0px);
+      --safe-bottom: env(safe-area-inset-bottom, 0px);
+      --safe-left: env(safe-area-inset-left, 0px);
+    }
+    html, body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background: #000;
+      height: 100%;
+      width: 100%;
+      font-family: Arial, sans-serif;
+      touch-action: none;
+      overscroll-behavior: none;
+    }
+    canvas {
+      display: block;
+      touch-action: none;
+    }
+    .hud {
+      position: fixed;
+      top: calc(10px + var(--safe-top));
+      left: calc(12px + var(--safe-left));
+      right: calc(12px + var(--safe-right));
+      color: rgba(255,255,255,0.72);
+      font-size: 11px;
+      letter-spacing: 0.03em;
+      user-select: none;
+      pointer-events: none;
+      text-shadow: 0 0 8px rgba(255,255,255,0.12);
+      z-index: 5;
+      max-width: 56vw;
+    }
+    .controls {
+      position: fixed;
+      top: calc(10px + var(--safe-top));
+      right: calc(12px + var(--safe-right));
+      display: flex;
+      gap: 8px;
+      z-index: 20;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      max-width: min(76vw, 420px);
+    }
+    .controls button {
+      appearance: none;
+      border: 1px solid rgba(255,255,255,0.22);
+      background: rgba(20,20,20,0.72);
+      color: rgba(255,255,255,0.94);
+      padding: 10px 14px;
+      min-height: 42px;
+      font-size: 14px;
+      border-radius: 10px;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+      backdrop-filter: blur(5px);
+    }
+    .controls button:active {
+      transform: scale(0.98);
+      background: rgba(40,40,40,0.85);
+    }
+    .credit {
+      position: fixed;
+      right: calc(10px + var(--safe-right));
+      bottom: calc(8px + var(--safe-bottom));
+      color: rgba(255,255,255,0.34);
+      font-size: 9px;
+      line-height: 1.2;
+      letter-spacing: 0.02em;
+      text-align: right;
+      user-select: none;
+      pointer-events: none;
+      text-shadow: 0 0 6px rgba(255,255,255,0.08);
+      z-index: 5;
+      max-width: 62vw;
+    }
+    @media (max-width: 640px) {
+      .hud {
+        font-size: 10px;
+        max-width: 52vw;
+      }
+      .controls {
+        max-width: 46vw;
+      }
+      .controls button {
+        padding: 9px 12px;
+        min-height: 40px;
+        font-size: 13px;
+      }
+      .credit {
+        font-size: 8px;
+        max-width: 72vw;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="hud">Pipes 3D mobile · drag to orbit · pinch to zoom · double-tap to reset</div>
+  <div class="controls">
+    <button id="pauseBtn" type="button">Pause</button>
+    <button id="recordBtn" type="button">Record</button>
+  </div>
+  <div class="credit">Pipes 3D recreation by Jose and ChatGPT · inspired by the Windows 3D Pipes screensaver</div>
+
+  <script>
+    const GRID_EXTENT = 13;
+    const CELL = 28;
+    const MAX_PIPES = 18;
+    const MAX_SEGMENTS_PER_PIPE = 120;
+    const TURN_PROBABILITY = 0.20;
+
+    const PIPE_RADIUS = 7;
+    const JOINT_RADIUS = 8.3;
+    const ENDPOINT_RADIUS = 8.7;
+
+    const ELBOW_RADIUS = CELL * 0.5;
+    const ELBOW_TUBE_RADIUS = PIPE_RADIUS * 0.98;
+    const ELBOW_ARC_STEPS = 8;
+    const ELBOW_RADIAL_STEPS = 8;
+
+    const GROWTH_DELAY = 4;
+    const CORNER_SPHERE_CHANCE = 0.86;
+
+    let pipes = [];
+    let occupied;
+    let lastSpawnFrame = 0;
+    let activePalette = [];
+
+    let camDistance = 900;
+    let userYaw = 0;
+    let userPitch = -0.12;
+    let autoYaw = 0;
+    let camHeightAmp = 70;
+    let suppressAutoUntil = 0;
+
+    let isPaused = false;
+    let mediaRecorder = null;
+    let recordedChunks = [];
+    let recordButton = null;
+    let pauseButton = null;
+
+    let singleTouchActive = false;
+    let pinchActive = false;
+    let lastTouchX = 0;
+    let lastTouchY = 0;
+    let lastPinchDistance = 0;
+    let lastTapTime = 0;
+
+    const DIRS = [
+      [ 1, 0, 0], [-1, 0, 0],
+      [ 0, 1, 0], [ 0,-1, 0],
+      [ 0, 0, 1], [ 0, 0,-1]
+    ];
+
+    const PALETTE = [
+      [  0, 255, 255],
+      [  0, 220, 220],
+      [  0, 255,   0],
+      [120, 255,   0],
+      [255, 255,   0],
+      [255, 170,   0],
+      [255,  40,  40],
+      [255,   0, 255],
+      [255, 255, 255],
+      [210, 210, 210]
+    ];
+    const PALETTE_WEIGHTS = [6, 4, 6, 3, 4, 3, 3, 2, 4, 3];
+
+    const elbowArcAngles = [];
+    const elbowTubeAngles = [];
+
+    function setup() {
+      const cnv = createCanvas(windowWidth, windowHeight, WEBGL);
+      frameRate(60);
+      pixelDensity(Math.min(window.devicePixelRatio || 1, 2));
+      initElbowTables();
+      setupUI(cnv);
+      resetWorld();
+    }
+
+    function initElbowTables() {
+      elbowArcAngles.length = 0;
+      elbowTubeAngles.length = 0;
+      for (let i = 0; i <= ELBOW_ARC_STEPS; i++) {
+        const t = (HALF_PI * i) / ELBOW_ARC_STEPS;
+        elbowArcAngles.push({ c: cos(t), s: sin(t) });
+      }
+      for (let j = 0; j <= ELBOW_RADIAL_STEPS; j++) {
+        const p = (TWO_PI * j) / ELBOW_RADIAL_STEPS;
+        elbowTubeAngles.push({ c: cos(p), s: sin(p) });
+      }
+    }
+
+    function setupUI(cnv) {
+      pauseButton = document.getElementById('pauseBtn');
+      recordButton = document.getElementById('recordBtn');
+
+      pauseButton.addEventListener('click', togglePause);
+      recordButton.addEventListener('click', async () => {
+        if (mediaRecorder && mediaRecorder.state === 'recording') stopRecording();
+        else await startRecording(cnv);
+      });
+
+      cnv.elt.addEventListener('touchstart', handleTouchStart, { passive: false });
+      cnv.elt.addEventListener('touchmove', handleTouchMove, { passive: false });
+      cnv.elt.addEventListener('touchend', handleTouchEnd, { passive: false });
+      cnv.elt.addEventListener('touchcancel', handleTouchEnd, { passive: false });
+    }
+
+    function togglePause() {
+      isPaused = !isPaused;
+      if (pauseButton) pauseButton.textContent = isPaused ? 'Play' : 'Pause';
+    }
+
+    async function startRecording(cnv) {
+      const stream = cnv.elt.captureStream(60);
+      recordedChunks = [];
+
+      let mimeType = '';
+      if (MediaRecorder.isTypeSupported('video/webm;codecs=vp9')) mimeType = 'video/webm;codecs=vp9';
+      else if (MediaRecorder.isTypeSupported('video/webm;codecs=vp8')) mimeType = 'video/webm;codecs=vp8';
+      else mimeType = 'video/webm';
+
+      mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) recordedChunks.push(event.data);
+      };
+
+      mediaRecorder.onstop = () => {
+        const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType || 'video/webm' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+        a.href = url;
+        a.download = `pipes-3d-mobile-recording-${stamp}.webm`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
+        if (recordButton) recordButton.textContent = 'Record';
+      };
+
+      mediaRecorder.start();
+      if (recordButton) recordButton.textContent = 'Stop';
+    }
+
+    function stopRecording() {
+      if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.stop();
+    }
+
+    function chooseActivePalette() {
+      const count = random() < 0.5 ? 2 : 3;
+      const picked = [];
+      const used = new Set();
+
+      let safety = 0;
+      while (picked.length < count && safety < 100) {
+        safety++;
+        let total = 0;
+        for (const w of PALETTE_WEIGHTS) total += w;
+        let pick = random(total);
+        let idx = 0;
+        for (let i = 0; i < PALETTE.length; i++) {
+          pick -= PALETTE_WEIGHTS[i];
+          if (pick <= 0) { idx = i; break; }
+        }
+        if (!used.has(idx)) {
+          used.add(idx);
+          picked.push(PALETTE[idx]);
+        }
+      }
+      return picked;
+    }
+
+    function resetWorld() {
+      pipes = [];
+      occupied = new Set();
+      lastSpawnFrame = 0;
+      activePalette = chooseActivePalette();
+      for (let i = 0; i < 7; i++) spawnPipe();
+    }
+
+    function draw() {
+      background(0);
+      setCameraOrbit();
+
+      ambientLight(88);
+      directionalLight(150, 150, 160, -0.45, 0.8, -1.0);
+
+      const lr = GRID_EXTENT * CELL * 1.45;
+      pointLight(100, 170, 255,  lr, -lr * 0.35,  lr);
+      pointLight(255, 110, 150, -lr,  lr * 0.15, -lr);
+      pointLight(120, 255, 150,  0,   lr * 0.55, -lr * 0.45);
+
+      drawStarfield(160);
+
+      for (const pipe of pipes) {
+        if (!isPaused && !pipe.dead) pipeGrow(pipe);
+        drawPipe(pipe);
+      }
+
+      if (!isPaused) {
+        pipes = pipes.filter(p => !p.removeMe);
+        if (frameCount - lastSpawnFrame > 40 && pipes.length < MAX_PIPES) spawnPipe();
+      }
+    }
+
+    function setCameraOrbit() {
+      if (!isPaused && millis() > suppressAutoUntil) autoYaw += 0.0012;
+
+      const yaw = userYaw + autoYaw;
+      const pitch = constrain(userPitch, -1.35, 1.35);
+
+      const cp = cos(pitch);
+      const sp = sin(pitch);
+      const cy = cos(yaw);
+      const sy = sin(yaw);
+
+      const eyeX = camDistance * cp * cy;
+      const eyeY = camDistance * sp + sin(frameCount * 0.0011) * camHeightAmp;
+      const eyeZ = camDistance * cp * sy;
+
+      camera(eyeX, eyeY, eyeZ, 0, 0, 0, 0, 1, 0);
+    }
+
+    function drawStarfield(count) {
+      push();
+      noStroke();
+      for (let i = 0; i < count; i++) {
+        const a = i * 12.9898;
+        const r = GRID_EXTENT * CELL * 2.8;
+        const x = sin(a * 1.37 + 5.2) * r;
+        const y = cos(a * 0.91 + 1.7) * r;
+        const z = sin(a * 0.73 + 8.1) * cos(a * 0.41 + 0.5) * r;
+        push();
+        translate(x, y, z);
+        ambientMaterial(180, 190, 210);
+        sphere(0.8, 4, 4);
+        pop();
+      }
+      pop();
+    }
+
+    function spawnPipe() {
+      const start = randomFreeCell();
+      if (!start) return;
+
+      const dir = random(DIRS);
+      const pipe = {
+        color: randomPipeColor(),
+        joints: [start],
+        dirs: [],
+        cornerStyle: new Map(),
+        dir: dir,
+        dead: false,
+        age: 0,
+        maxSegments: floor(random(MAX_SEGMENTS_PER_PIPE * 0.55, MAX_SEGMENTS_PER_PIPE)),
+      };
+
+      occupy(start);
+      pipes.push(pipe);
+      lastSpawnFrame = frameCount;
+    }
+
+    function randomPipeColor() {
+      const sourcePalette = activePalette.length ? activePalette : PALETTE;
+      const base = random(sourcePalette);
+      const jitter = 4;
+      return color(
+        constrain(base[0] + random(-jitter, jitter), 0, 255),
+        constrain(base[1] + random(-jitter, jitter), 0, 255),
+        constrain(base[2] + random(-jitter, jitter), 0, 255)
+      );
+    }
+
+    function pipeGrow(pipe) {
+      pipe.age++;
+      if (pipe.age % GROWTH_DELAY !== 0) return;
+
+      const head = pipe.joints[pipe.joints.length - 1];
+      let dir = pipe.dir;
+
+      if (random() < TURN_PROBABILITY) {
+        const options = DIRS.filter(d => !sameDir(d, dir) && !sameDir(d, negate(dir)));
+        shuffle(options, true);
+        for (const candidate of options) {
+          const next = add3(head, candidate);
+          if (isValidCell(next) && !isOccupied(next)) {
+            dir = candidate;
+            break;
+          }
+        }
+        pipe.dir = dir;
+      }
+
+      let next = add3(head, dir);
+      if (!isValidCell(next) || isOccupied(next) || pipe.joints.length >= pipe.maxSegments) {
+        const available = DIRS
+          .filter(d => !sameDir(d, negate(pipe.dir)))
+          .map(d => ({ d, next: add3(head, d) }))
+          .filter(o => isValidCell(o.next) && !isOccupied(o.next));
+
+        if (available.length > 0 && pipe.joints.length < pipe.maxSegments) {
+          const chosen = random(available);
+          pipe.dir = chosen.d;
+          next = chosen.next;
+        } else {
+          pipe.dead = true;
+          pipe.removeMe = pipe.joints.length < 4;
+          return;
+        }
+      }
+
+      if (pipe.dirs.length > 0) {
+        const prevDir = pipe.dirs[pipe.dirs.length - 1];
+        if (!sameDir(prevDir, pipe.dir)) {
+          pipe.cornerStyle.set(
+            pipe.joints.length - 1,
+            random() < CORNER_SPHERE_CHANCE ? 'sphere' : 'curve'
+          );
+        }
+      }
+
+      pipe.dirs.push([pipe.dir[0], pipe.dir[1], pipe.dir[2]]);
+      pipe.joints.push(next);
+      occupy(next);
+    }
+
+    function drawPipe(pipe) {
+      const pts = pipe.joints;
+      if (pts.length < 2) return;
+
+      push();
+      noStroke();
+
+      for (let i = 0; i < pts.length - 1; i++) drawStraightSegment(pipe, i);
+
+      for (const [idx, style] of pipe.cornerStyle.entries()) {
+        if (idx <= 0 || idx >= pts.length - 1) continue;
+        if (style === 'sphere') drawCornerSphere(pts[idx], pipe.color);
+        else drawQuarterTorusElbow(pts[idx], pipe.dirs[idx - 1], pipe.dirs[idx], pipe.color);
+      }
+
+      drawEndpointSphere(pts[0], pipe.color);
+      drawEndpointSphere(pts[pts.length - 1], pipe.color);
+
+      pop();
+    }
+
+    function drawStraightSegment(pipe, segIndex) {
+      const aCell = pipe.joints[segIndex];
+      const bCell = pipe.joints[segIndex + 1];
+      const dir = vecFromArr(pipe.dirs[segIndex]);
+
+      let a = toWorld(aCell);
+      let b = toWorld(bCell);
+
+      const startCorner = pipe.cornerStyle.get(segIndex);
+      const endCorner = pipe.cornerStyle.get(segIndex + 1);
+
+      if (startCorner === 'curve') a = addVec(a, scaleVec(dir, ELBOW_RADIUS));
+      if (endCorner === 'curve') b = addVec(b, scaleVec(dir, -ELBOW_RADIUS));
+
+      drawCylinderBetween(a, b, pipe.color, 14);
+    }
+
+    function drawCylinderBetween(pa, pb, c, detail = 14) {
+      const dx = pb.x - pa.x;
+      const dz = pb.z - pa.z;
+      const len = dist(pa.x, pa.y, pa.z, pb.x, pb.y, pb.z);
+      if (len < 0.001) return;
+
+      push();
+      translate((pa.x + pb.x) / 2, (pa.y + pb.y) / 2, (pa.z + pb.z) / 2);
+
+      if (abs(dx) > 0) rotateZ(HALF_PI);
+      else if (abs(dz) > 0) rotateX(HALF_PI);
+
+      pipeMaterial(c);
+      cylinder(PIPE_RADIUS, len, detail, 1, false, false);
+      pop();
+    }
+
+    function drawCornerSphere(p, c) {
+      const wp = toWorld(p);
+      push();
+      translate(wp.x, wp.y, wp.z);
+      pipeMaterial(c);
+      sphere(JOINT_RADIUS, 16, 12);
+      pop();
+    }
+
+    function drawEndpointSphere(p, c) {
+      const wp = toWorld(p);
+      push();
+      translate(wp.x, wp.y, wp.z);
+      pipeMaterial(c);
+      sphere(ENDPOINT_RADIUS, 16, 12);
+      pop();
+    }
+
+    function drawQuarterTorusElbow(pCell, prevDirArr, nextDirArr, c) {
+      const joint = toWorld(pCell);
+      const u = vecFromArr(prevDirArr);
+      const v = vecFromArr(nextDirArr);
+      const n = normalizeVec(crossVec(u, v));
+
+      if (vecLength(n) < 0.5) {
+        drawCornerSphere(pCell, c);
+        return;
+      }
+
+      const center = addVec(joint, addVec(scaleVec(u, -ELBOW_RADIUS), scaleVec(v, ELBOW_RADIUS)));
+      pipeMaterial(c);
+
+      for (let i = 0; i < ELBOW_ARC_STEPS; i++) {
+        const a0 = elbowArcAngles[i];
+        const a1 = elbowArcAngles[i + 1];
+
+        beginShape(TRIANGLE_STRIP);
+        for (let j = 0; j <= ELBOW_RADIAL_STEPS; j++) {
+          const t = elbowTubeAngles[j];
+
+          const p0 = elbowSurfacePoint(center, u, v, n, a0, t);
+          const p1 = elbowSurfacePoint(center, u, v, n, a1, t);
+          const nm0 = elbowSurfaceNormal(u, v, n, a0, t);
+          const nm1 = elbowSurfaceNormal(u, v, n, a1, t);
+
+          normal(nm0.x, nm0.y, nm0.z);
+          vertex(p0.x, p0.y, p0.z);
+
+          normal(nm1.x, nm1.y, nm1.z);
+          vertex(p1.x, p1.y, p1.z);
+        }
+        endShape();
+      }
+
+      const start = addVec(joint, scaleVec(u, -ELBOW_RADIUS));
+      const end = addVec(joint, scaleVec(v, ELBOW_RADIUS));
+      drawElbowSeamSphere(start, c);
+      drawElbowSeamSphere(end, c);
+    }
+
+    function elbowSurfacePoint(center, u, v, n, a, t) {
+      const radialDir = addVec(scaleVec(u, a.s), scaleVec(v, -a.c));
+      const ring = addVec(
+        scaleVec(radialDir, ELBOW_RADIUS + ELBOW_TUBE_RADIUS * t.c),
+        scaleVec(n, ELBOW_TUBE_RADIUS * t.s)
+      );
+      return addVec(center, ring);
+    }
+
+    function elbowSurfaceNormal(u, v, n, a, t) {
+      const radialDir = addVec(scaleVec(u, a.s), scaleVec(v, -a.c));
+      return normalizeVec(addVec(scaleVec(radialDir, t.c), scaleVec(n, t.s)));
+    }
+
+    function drawElbowSeamSphere(p, c) {
+      push();
+      translate(p.x, p.y, p.z);
+      pipeMaterial(c);
+      sphere(PIPE_RADIUS * 0.52, 8, 6);
+      pop();
+    }
+
+    function pipeMaterial(c) {
+      ambientMaterial(red(c), green(c), blue(c));
+      specularMaterial(
+        min(red(c) + 22, 255),
+        min(green(c) + 22, 255),
+        min(blue(c) + 22, 255)
+      );
+      shininess(11);
+    }
+
+    function toWorld(p) {
+      return { x: p[0] * CELL, y: p[1] * CELL, z: p[2] * CELL };
+    }
+
+    function randomFreeCell() {
+      for (let i = 0; i < 600; i++) {
+        const p = [
+          floor(random(-GRID_EXTENT, GRID_EXTENT + 1)),
+          floor(random(-GRID_EXTENT, GRID_EXTENT + 1)),
+          floor(random(-GRID_EXTENT, GRID_EXTENT + 1)),
+        ];
+        if (!isOccupied(p)) return p;
+      }
+      return null;
+    }
+
+    function isValidCell(p) {
+      return (
+        p[0] >= -GRID_EXTENT && p[0] <= GRID_EXTENT &&
+        p[1] >= -GRID_EXTENT && p[1] <= GRID_EXTENT &&
+        p[2] >= -GRID_EXTENT && p[2] <= GRID_EXTENT
+      );
+    }
+
+    function keyOf(p) {
+      return `${p[0]},${p[1]},${p[2]}`;
+    }
+
+    function isOccupied(p) {
+      return occupied.has(keyOf(p));
+    }
+
+    function occupy(p) {
+      occupied.add(keyOf(p));
+    }
+
+    function add3(a, b) {
+      return [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+    }
+
+    function negate(a) {
+      return [-a[0], -a[1], -a[2]];
+    }
+
+    function sameDir(a, b) {
+      return a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
+    }
+
+    function vecFromArr(a) {
+      return { x: a[0], y: a[1], z: a[2] };
+    }
+
+    function addVec(a, b) {
+      return { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z };
+    }
+
+    function scaleVec(a, s) {
+      return { x: a.x * s, y: a.y * s, z: a.z * s };
+    }
+
+    function crossVec(a, b) {
+      return {
+        x: a.y * b.z - a.z * b.y,
+        y: a.z * b.x - a.x * b.z,
+        z: a.x * b.y - a.y * b.x
+      };
+    }
+
+    function vecLength(a) {
+      return Math.sqrt(a.x * a.x + a.y * a.y + a.z * a.z);
+    }
+
+    function normalizeVec(a) {
+      const len = vecLength(a);
+      if (len < 1e-8) return { x: 0, y: 0, z: 0 };
+      return { x: a.x / len, y: a.y / len, z: a.z / len };
+    }
+
+    function handleTouchStart(event) {
+      event.preventDefault();
+      suppressAutoUntil = millis() + 4000;
+
+      if (event.touches.length === 1) {
+        singleTouchActive = true;
+        pinchActive = false;
+        lastTouchX = event.touches[0].clientX;
+        lastTouchY = event.touches[0].clientY;
+
+        const now = millis();
+        if (now - lastTapTime < 280) resetWorld();
+        lastTapTime = now;
+      } else if (event.touches.length >= 2) {
+        singleTouchActive = false;
+        pinchActive = true;
+        lastPinchDistance = touchDistance(event.touches[0], event.touches[1]);
+      }
+    }
+
+    function handleTouchMove(event) {
+      event.preventDefault();
+      suppressAutoUntil = millis() + 4000;
+
+      if (event.touches.length === 1 && singleTouchActive) {
+        const t = event.touches[0];
+        const dx = t.clientX - lastTouchX;
+        const dy = t.clientY - lastTouchY;
+        userYaw += dx * 0.008;
+        userPitch += dy * 0.008;
+        userPitch = constrain(userPitch, -1.35, 1.35);
+        lastTouchX = t.clientX;
+        lastTouchY = t.clientY;
+      } else if (event.touches.length >= 2) {
+        pinchActive = true;
+        singleTouchActive = false;
+        const d = touchDistance(event.touches[0], event.touches[1]);
+        const delta = d - lastPinchDistance;
+        camDistance = constrain(camDistance - delta * 1.2, 120, 1400);
+        lastPinchDistance = d;
+      }
+    }
+
+    function handleTouchEnd(event) {
+      event.preventDefault();
+      if (event.touches.length === 0) {
+        singleTouchActive = false;
+        pinchActive = false;
+        suppressAutoUntil = millis() + 2500;
+      } else if (event.touches.length === 1) {
+        singleTouchActive = true;
+        pinchActive = false;
+        lastTouchX = event.touches[0].clientX;
+        lastTouchY = event.touches[0].clientY;
+      }
+    }
+
+    function touchDistance(a, b) {
+      const dx = a.clientX - b.clientX;
+      const dy = a.clientY - b.clientY;
+      return Math.sqrt(dx * dx + dy * dy);
+    }
+
+    function mousePressed() {
+      suppressAutoUntil = millis() + 4000;
+    }
+
+    function mouseDragged() {
+      if (mouseButton === LEFT) {
+        userYaw += movedX * 0.008;
+        userPitch += movedY * 0.008;
+        userPitch = constrain(userPitch, -1.35, 1.35);
+        suppressAutoUntil = millis() + 4000;
+      }
+      return false;
+    }
+
+    function mouseReleased() {
+      suppressAutoUntil = millis() + 2500;
+    }
+
+    function mouseWheel(event) {
+      camDistance = constrain(camDistance + event.delta * 0.45, 120, 1400);
+      suppressAutoUntil = millis() + 2500;
+      return false;
+    }
+
+    function doubleClicked() {
+      resetWorld();
+      return false;
+    }
+
+    function keyPressed() {
+      if (key === ' ' || key === 'r' || key === 'R') resetWorld();
+      if (key === 'p' || key === 'P') togglePause();
+    }
+
+    function windowResized() {
+      resizeCanvas(windowWidth, windowHeight);
+    }
+  </script>
+</body>
+</html>
